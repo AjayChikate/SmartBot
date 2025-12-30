@@ -2,6 +2,12 @@
 
 A powerful Streamlit-based application that enables intelligent conversations with your documents using RAG (Retrieval-Augmented Generation) technology and Google's Gemini AI.
 
+<div align="center">
+<img width="300"  src="https://github.com/user-attachments/assets/cfaca4fd-2563-4558-8a3f-278a725bfee1" />
+<img width="300"  src="https://github.com/user-attachments/assets/6d1a9ffd-e7b6-4dbd-8f1a-43d311801b2f" />
+</div>
+
+
 ## ✨ Features
 
 - 📄 **Multi-Format Support**: PDF, Word (DOCX), PowerPoint (PPTX), HTML, Text/Markdown, and Images
