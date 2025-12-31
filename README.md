@@ -76,7 +76,7 @@ pytesseract
 
 ## 🏗️ Project Structure
 ```
-ai-document-assistant/
+SmartBot/
 │
 ├── app.py                 # Main Streamlit application
 ├── rag.py                 # RAG pipeline (chunking, vectorstore, conversation chain)
