@@ -1,158 +1,343 @@
-import os
+import uuid
 import streamlit as st
 from dotenv import load_dotenv
+
 from processor import process_all_documents
-from rag import get_text_chunks, get_conversation_chain, get_vectorstore
+from rag import (
+    get_text_chunks,
+    get_vectorstore,
+    get_conversation_chain,
+    clear_chroma_collection,
+    generate_followup_questions,
+    summarize_documents,
+    process_query_with_hybrid_search,
+    
+)
 from htmlTemplates import css, bot_template, user_template
 
 
-import warnings
-warnings.filterwarnings("ignore", message="Convert_system_message_to_human will be deprecated!")
-
+MAX_CONVERSATION_PAIRS=5  # Keep last 5 Q&A pairs(10 items)to prevent memory bloat
 
 
 def display_chat_history():
-    if st.session_state.messages:
-        for msg in st.session_state.messages:
-            if msg["role"] == "user":
-                st.markdown(user_template.replace("{{MSG}}", msg["content"]), unsafe_allow_html=True)
-            else:
-                st.markdown(bot_template.replace("{{MSG}}", msg["content"]), unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div class="empty-state">
-            <div class="empty-state-icon">💬</div>
-            <div class="empty-state-text">Upload your documents and start chatting</div>
-            <div class="empty-state-subtext">Supports PDF, Word, PowerPoint, HTML, Text & Images</div>
-        </div>
-        """, unsafe_allow_html=True)
+    for msg in st.session_state.messages:
+        template = user_template if msg["role"] == "user" else bot_template
+        st.markdown(
+            template.replace("{{MSG}}", msg["content"]),
+            unsafe_allow_html=True
+        )
 
 
+def show_sources(sources):
+    if not sources:
+        return
 
-
-
+    with st.expander(" Evidence used to answer"):
+        for i, doc in enumerate(sources, 1):
+            st.markdown(f"**Source {i}**")
+            st.markdown(
+                f"<div class='source-box'>{doc.page_content[:1500]}</div>",
+                unsafe_allow_html=True
+            )
+            if doc.metadata:
+                metadata_text = " || ".join([f"**{k}**: {v}" for k, v in doc.metadata.items()])
+                st.caption(metadata_text)
 
 
 def main():
     load_dotenv()
+
     st.set_page_config(
-        page_title="AI Document Assistant", 
-        page_icon="🤖", 
+        page_title="Smart AI Assistant",
+        page_icon="🤖",
         layout="wide",
         initial_sidebar_state="expanded"
     )
-    
-    if not os.getenv("GOOGLE_API_KEY"):
-        st.error("⚠️ Please set GOOGLE_API_KEY in your .env file!")
-        st.info("Get your API key from: https://makersuite.google.com/app/apikey")
-        return
-    
-    
-    
-    
-    
+
     st.markdown(css, unsafe_allow_html=True)
-    
+
+    # Session State
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4()) 
     if "conversation" not in st.session_state:
         st.session_state.conversation = None
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
     if "sources" not in st.session_state:
         st.session_state.sources = []
-    
-    st.markdown("""
-    <div class="main-header">
-        <div class="header-icon">🤖</div>
-        <h1>AI Document Assistant</h1>
-        <p>Intelligent document analysis powered by AI</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    with st.sidebar:
-        st.markdown('<div class="sidebar-header">⚙️ Settings</div>', unsafe_allow_html=True)
-        enable_ocr = st.toggle("🔍 Enable OCR", value=True, help="Extract text from scanned documents and images in PDFs")
-        
-        st.markdown("---")
-        st.markdown('<div class="sidebar-header">📁 Upload Documents</div>', unsafe_allow_html=True)
-        
-        pdf_docs = st.file_uploader("📄 PDF Files", accept_multiple_files=True, type=['pdf'])
-        docx_docs = st.file_uploader("📝 Word Documents", accept_multiple_files=True, type=['docx'])
-        pptx_docs = st.file_uploader("📊 PowerPoint Files", accept_multiple_files=True, type=['pptx'])
-        html_docs = st.file_uploader("🌐 HTML Files", accept_multiple_files=True, type=['html', 'htm'])
-        txt_docs = st.file_uploader("📃 Text/Markdown", accept_multiple_files=True, type=['txt', 'md'])
-        image_docs = st.file_uploader("🖼️ Images", accept_multiple_files=True, type=['png', 'jpg', 'jpeg', 'tiff'])
-        
-        total_files = len(pdf_docs or []) + len(docx_docs or []) + len(pptx_docs or []) + len(html_docs or []) + len(txt_docs or []) + len(image_docs or [])
-        
-        if total_files > 0:
-            st.markdown(f'<div class="file-counter">✅ {total_files} file(s) uploaded</div>', unsafe_allow_html=True)
-        
-        st.markdown("---")
-        
-        if st.button("🚀 Process Documents", type="primary", use_container_width=True):
-            if total_files == 0:
-                st.error("❌ Please upload at least one document!")
-            else:
-                with st.spinner("🔄 Processing your documents..."):
-                    progress_bar = st.progress(0)
-                    status = st.empty()
-                    
-                    status.info("📄 Reading documents...")
-                    progress_bar.progress(20)
-                    poppler_path = ""
-                    all_text = process_all_documents(pdf_docs, docx_docs, pptx_docs, html_docs, txt_docs, image_docs, enable_ocr, poppler_path)
-                    
-                    if not all_text.strip():
-                        st.error("❌ No text could be extracted from the documents!")
-                    else:
-                        status.info("✂️ Creating text chunks...")
-                        progress_bar.progress(50)
-                        text_chunks = get_text_chunks(all_text)
-                        
-                        status.info("🧠 Building knowledge base...")
-                        progress_bar.progress(75)
-                        vectorstore = get_vectorstore(text_chunks)
-                        
-                        status.info("🔗 Setting up AI assistant...")
-                        progress_bar.progress(90)
-                        st.session_state.conversation = get_conversation_chain(vectorstore)
-                        
-                        progress_bar.progress(100)
-                        status.success(f"✅ Successfully processed {len(text_chunks)} text chunks!")
-                        st.balloons()
-        
-        st.markdown("---")
-        st.markdown('<div class="sidebar-footer">Made with ❤️ using Streamlit</div>', unsafe_allow_html=True)
-    
-    display_chat_history()
-    
-    if prompt := st.chat_input("💬 Ask me anything about your documents..."):
-        if st.session_state.conversation is None:
-            st.warning("⚠️ Please upload and process documents first!")
-        else:
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            
-            with st.spinner("🤔 Analyzing..."):
-                try:
-                    response = st.session_state.conversation.invoke({"question": prompt})
-                    answer = response.get('answer', '')
-                    st.session_state.sources = response.get('source_documents', [])
-                    
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
-                    
-                except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
-            
-            st.rerun()
-    
-    if st.session_state.sources and len(st.session_state.messages) > 0:
-        with st.expander("📚 View Source References", expanded=False):
-            for idx, doc in enumerate(st.session_state.sources, 1):
-                st.markdown(f"**📄 Source {idx}**")
-                snippet = doc.page_content[:400] + "..." if len(doc.page_content) > 400 else doc.page_content
-                st.markdown(f'<div class="source-box">{snippet}</div>', unsafe_allow_html=True)
-                if idx < len(st.session_state.sources):
-                    st.markdown("---")
+    if "last_answer" not in st.session_state:
+        st.session_state.last_answer = ""
+    if "doc_stats" not in st.session_state:
+        st.session_state.doc_stats = {"total_chunks": 0, "doc_count": 0, "docs_by_type": {}}
+    if "followup_questions" not in st.session_state:
+        st.session_state.followup_questions = []
+    if "doc_summary" not in st.session_state:
+        st.session_state.doc_summary = ""
+    if "raw_text" not in st.session_state:
+        st.session_state.raw_text = ""
+    if "vectorstore" not in st.session_state:
+        st.session_state.vectorstore = None
+    if "text_chunks" not in st.session_state:
+        st.session_state.text_chunks = []
+    if "sub_queries" not in st.session_state:
+        st.session_state.sub_queries = None
+    if "use_hybrid_search" not in st.session_state:
+        st.session_state.use_hybrid_search = True
+    if "use_reranking" not in st.session_state:
+        st.session_state.use_reranking = True
 
-if __name__ == '__main__':
+    # Header
+    st.markdown(
+        """
+        <div class="page-title">
+            <h1> Upload Documents and Chat now </h1>
+            <p> SmartBot is Advanced Retrieval-Augmented Generation System</p>
+        </div>
+
+        """,
+        unsafe_allow_html=True
+    )
+
+    # Sidebar 
+    with st.sidebar:
+        st.markdown("<div class='sidebar-section-title'>Document Management</div>", unsafe_allow_html=True)
+
+        if st.button("New Session", use_container_width=True, key="new_chat_btn",help="Make new session for fresh start"):
+            clear_chroma_collection(st.session_state.session_id, use_gpu=True)
+            st.session_state.session_id = str(uuid.uuid4())
+            st.session_state.messages.clear()
+            st.session_state.chat_history.clear()
+            st.session_state.sources.clear()
+            st.session_state.last_answer = ""
+            st.session_state.conversation = None
+            st.session_state.doc_stats = {"total_chunks": 0, "doc_count": 0, "docs_by_type": {}}
+            st.session_state.followup_questions = []
+            st.session_state.doc_summary = ""
+            st.session_state.raw_text = ""
+            st.session_state.vectorstore = None
+            st.session_state.text_chunks = []
+            st.session_state.sub_queries = None
+            st.rerun()
+
+        st.divider()
+
+        with st.expander("Advanced Settings", expanded=False):
+            st.session_state.use_hybrid_search = st.checkbox(
+                "Hybrid Search (Semantic + BM25)",
+                value=True,
+                help="Combines semantic and keyword search for better accuracy if disabled it will only answer on your chats and no retrival,can disable for experiments!"
+            )
+            st.session_state.use_reranking = st.checkbox(
+                "Cross-Encoder Reranking",
+                value=True,
+                help="Reorders results by relevance using cross-encoder"
+            )
+
+        st.divider()
+
+        enable_ocr = st.toggle("Enable OCR",
+                                value=True,
+                                help="handles images/scanned documents"
+                                )
+
+        st.divider()
+
+        st.markdown("**Document Statistics**")
+        if st.session_state.doc_stats["doc_count"] > 0:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Documents", st.session_state.doc_stats["doc_count"])
+            with col2:
+                st.metric("Text Chunks", st.session_state.doc_stats["total_chunks"])
+            
+            if st.session_state.doc_stats["docs_by_type"]:
+                st.markdown("**Document Types:**")
+                for doc_type, count in st.session_state.doc_stats["docs_by_type"].items():
+                    st.caption(f"{doc_type}: {count}")
+            
+            st.divider()
+
+            st.markdown("**Document Summary**")
+            summary_type = st.radio(
+                "Summary type:",
+                ["Brief", "Detailed", "Comprehensive"],
+                key="summary_type",
+                horizontal=True
+            )
+            
+            if st.button("Generate Summary", use_container_width=True, key="gen_summary"):
+                with st.spinner("Generating summary..."):
+                    summary = summarize_documents(
+                        st.session_state.vectorstore,
+                        summary_type.lower()
+                    )
+                    st.session_state.doc_summary = summary
+            
+            if st.session_state.doc_summary:
+                with st.expander("View Summary", expanded=True):
+                    st.markdown(st.session_state.doc_summary)
+
+        else:
+            st.caption("No documents processed yet please upload docs")
+
+
+        st.divider()
+
+        pdf_docs = st.file_uploader("PDF", type="pdf", accept_multiple_files=True)
+        docx_docs = st.file_uploader("DOCX", type="docx", accept_multiple_files=True)
+        pptx_docs = st.file_uploader("PPTX", type="pptx", accept_multiple_files=True)
+        html_docs = st.file_uploader("HTML", type=["html", "htm"], accept_multiple_files=True)
+        txt_docs = st.file_uploader("TXT / MD", type=["txt", "md"], accept_multiple_files=True)
+        image_docs = st.file_uploader("Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+
+        if st.button("Process Documents", use_container_width=True):
+            with st.spinner("Processing documents..."):
+                text = process_all_documents(
+                    pdf_docs, docx_docs, pptx_docs,
+                    html_docs, txt_docs, image_docs,
+                    enable_ocr, ""
+                )
+
+                if not text.strip():
+                    st.error("No text extracted")
+                    return
+
+                chunks = get_text_chunks(text)
+                vs = get_vectorstore(chunks, st.session_state.session_id, use_gpu=True)
+                st.session_state.vectorstore = vs
+                st.session_state.text_chunks = chunks
+                st.session_state.conversation = get_conversation_chain(vs, chunks)
+                
+
+
+                doc_count = sum([
+                    len(pdf_docs) if pdf_docs else 0,
+                    len(docx_docs) if docx_docs else 0,
+                    len(pptx_docs) if pptx_docs else 0,
+                    len(html_docs) if html_docs else 0,
+                    len(txt_docs) if txt_docs else 0,
+                    len(image_docs) if image_docs else 0
+                ])
+                
+                st.session_state.doc_stats["total_chunks"] = len(chunks)
+                st.session_state.doc_stats["doc_count"] = doc_count
+                st.session_state.doc_stats["docs_by_type"] = {
+                    "PDF": len(pdf_docs) if pdf_docs else 0,
+                    "DOCX": len(docx_docs) if docx_docs else 0,
+                    "PPTX": len(pptx_docs) if pptx_docs else 0,
+                    "HTML": len(html_docs) if html_docs else 0,
+                    "TXT/MD": len(txt_docs) if txt_docs else 0,
+                    "Images": len(image_docs) if image_docs else 0
+                }
+                st.session_state.doc_stats["docs_by_type"] = {
+                    k: v for k, v in st.session_state.doc_stats["docs_by_type"].items() if v > 0
+                }
+                
+                st.session_state.raw_text = text
+                st.success("Documents processed successfully")
+                st.rerun()
+
+    # Chat 
+    display_chat_history()
+
+    # Main flow logic
+    if prompt := st.chat_input("Ask something about your documents..."):
+
+        if not st.session_state.conversation:
+            st.warning("Please upload and process documents first")
+            st.stop()
+
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.session_state.chat_history.append(prompt)
+
+        chat_pairs = [
+            (st.session_state.chat_history[i],
+             st.session_state.chat_history[i + 1])
+            for i in range(0, len(st.session_state.chat_history) - 1, 2)
+        ]
+
+        with st.spinner("Processing query..."):
+            if st.session_state.use_hybrid_search:
+                response = process_query_with_hybrid_search(
+                    conversation_chain=st.session_state.conversation,
+                    query=prompt,
+                    chat_history=chat_pairs,
+                    vectorstore=st.session_state.vectorstore,
+                    text_chunks=st.session_state.text_chunks,
+                    use_reranking=st.session_state.use_reranking
+                )
+                st.session_state.sub_queries = response.get("sub_queries")
+            else:
+                response = st.session_state.conversation.invoke({
+                    "question": prompt,
+                    "chat_history": chat_pairs
+                })
+                st.session_state.sub_queries = None
+
+        answer = response["answer"]
+        st.session_state.chat_history.append(answer)
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.session_state.sources = response.get("source_documents", [])
+        st.session_state.last_answer = answer
+        st.session_state.followup_questions = generate_followup_questions(prompt, answer)
+        max_items = MAX_CONVERSATION_PAIRS * 2
+        if len(st.session_state.chat_history) > max_items:
+            st.session_state.chat_history = st.session_state.chat_history[-max_items:]
+
+        st.rerun()
+
+    # Query Decompo..
+    if st.session_state.sub_queries and len(st.session_state.sub_queries) > 1:
+        with st.expander("Query Analysis", expanded=False):
+            st.markdown("**Sub-queries:**")
+            for i, sq in enumerate(st.session_state.sub_queries, 1):
+                st.markdown(f"{i}. {sq}")
+
+    #follow up
+    if st.session_state.followup_questions:
+        st.divider()
+        st.markdown("**Suggested Follow Up Questions:**")
+        for q in st.session_state.followup_questions:
+            if st.button(q, use_container_width=True, key=f"followup_{q}"):
+                st.session_state.chat_history.append(q)
+                st.session_state.messages.append({"role": "user", "content": q})
+                
+                chat_pairs = [
+                    (st.session_state.chat_history[i], st.session_state.chat_history[i + 1])
+                    for i in range(0, len(st.session_state.chat_history) - 1, 2)
+                ]
+                
+                if st.session_state.use_hybrid_search:
+                    response = process_query_with_hybrid_search(
+                        conversation_chain=st.session_state.conversation,
+                        query=q,
+                        chat_history=chat_pairs,
+                        vectorstore=st.session_state.vectorstore,
+                        text_chunks=st.session_state.text_chunks,
+                        use_reranking=st.session_state.use_reranking
+                    )
+                else:
+                    response = st.session_state.conversation.invoke({
+                        "question": q,
+                        "chat_history": chat_pairs
+                    })
+                
+                answer = response["answer"]
+                st.session_state.chat_history.append(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                st.session_state.sources = response.get("source_documents", [])
+                st.session_state.last_answer = answer
+                st.session_state.followup_questions = generate_followup_questions(q, answer)
+                max_items=MAX_CONVERSATION_PAIRS * 2
+                if len(st.session_state.chat_history) > max_items:
+                    st.session_state.chat_history = st.session_state.chat_history[-max_items:]
+                
+                st.rerun()
+
+    show_sources(st.session_state.sources)
+
+
+if __name__ == "__main__":
     main()

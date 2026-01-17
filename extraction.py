@@ -18,7 +18,7 @@ def extract_pdf_text(pdf_file, enable_ocr=False, poppler_path=None):
     text = ""
     pdf_bytes = pdf_file.read()
     try:
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:   # High level Structured img, tables and text Extractor, But easily fails in non structured cases
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:   # High level Structured img, tables and text Extractor, But easily fails in non structured cases so i ave a fallback
             for page in pdf.pages:
                 page_text = page.extract_text()
                 if page_text:
@@ -37,7 +37,7 @@ def extract_pdf_text(pdf_file, enable_ocr=False, poppler_path=None):
     if enable_ocr or not text.strip():
         try:
             poppler_path = os.getenv("POPPLER_PATH")
-            images = convert_from_bytes(pdf_bytes, poppler_path=poppler_path)   # From Scanned Images gives text uses poppler throughpdf2image
+            images = convert_from_bytes(pdf_bytes, poppler_path=poppler_path)   # From Scanned Images gives text 
             for img in images:
                 ocr_text = ocr_image(img)
                 if ocr_text:
